@@ -4,7 +4,6 @@ import math
 from typing import Sequence, Union, Tuple, List, Optional
 
 Numeric = Union[int, float]
-Nullable_float = Union[float, None]
 
 class Force:
     def __init__(self, value: Vector2D = Vector2D(0,0)) -> None:
@@ -29,7 +28,7 @@ class Joint:
         self.deplacement: Vector2D = Vector2D(0.0, 0.0)
         self.forces: List[Force] = []  # 节点受到的外力列表
         self.connected_members: List[Member] = []
-        self.truss: Truss = None
+        self.truss: Optional[Truss] = None
 
     def add_member(self, member: Member) -> None:
         self.connected_members.append(member)
@@ -126,7 +125,7 @@ class Joint:
 class Member:
     def __init__(self, joint1: Joint, joint2: Joint) -> None:
         self.joints: SmartTuple = SmartTuple((joint1, joint2))
-        self.force: Nullable_float = None  # 正值为拉力 (tension)，负值为压力 (compression)
+        self.force: Optional[float] = None  # 正值为拉力 (tension)，负值为压力 (compression)
 
     def force_determined(self):
         return self.force is not None
