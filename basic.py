@@ -25,7 +25,7 @@ class Force:
 class Joint:
     def __init__(self, pos: Sequence[Numeric]) -> None:
         self.pos: Vector2D = Vector2D(pos[0], pos[1])
-        self.deplacement: Vector2D = Vector2D(0.0, 0.0)
+        self.deplacement: Vector2D = Vector2D(0.0, 0.0) #assume displacement very small compared to position
         self.forces: List[Force] = []  # 节点受到的外力列表
         self.connected_members: List[Member] = []
         self.truss: Optional[Truss] = None
