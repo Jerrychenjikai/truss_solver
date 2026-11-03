@@ -55,7 +55,7 @@ class Joint:
 
     def solved(self):
         for i in self.connected_members:
-            if not i.force_determined:
+            if not i.force_determined():
                 return False
 
         return True
@@ -206,7 +206,7 @@ class Truss:
                     has_solvable_component = True
                     i.solve(virtual, target_joint, force)
 
-                if not i.solved:
+                if not i.solved():
                     solved = False
 
         if not solved:
