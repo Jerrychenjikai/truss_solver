@@ -52,6 +52,12 @@ class Vector2D(SmartTuple):
     def y(self) -> float:
         return self[1]
 
+    def set_x(self, x) -> Vector2D:
+        return Vector2D(x, self.y)
+
+    def set_y(self, y) -> Vector2D:
+            return Vector2D(self.x, y)
+
     def get_angle_radians(self) -> float:
         """获取向量弧度角 (-π 到 π)"""
         return math.atan2(self.y, self.x)

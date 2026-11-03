@@ -10,10 +10,10 @@ class Force:
         self.value: Vector2D = value
 
     def set_x(self, x: Numeric) -> None:
-        self.value = Vector2D(x, self.value.y)
+        self.value = self.value.set_x(x)
 
     def set_y(self, y: Numeric) -> None:
-        self.value = Vector2D(self.value.x, y)
+        self.value = self.value.set_y(y)
 
     def set_value(self, value: Sequence[Numeric]) -> None:
         self.value = Vector2D(value[0], value[1])
@@ -25,7 +25,7 @@ class Force:
 class Joint:
     def __init__(self, pos: Sequence[Numeric]) -> None:
         self.pos: Vector2D = Vector2D(pos[0], pos[1])
-        self.deplacement: Vector2D = Vector2D(0.0, 0.0) #assume displacement very small compared to position
+        self.displacement: Vector2D = Vector2D(0.0, 0.0) #assume displacement very small compared to position
         self.forces: List[Force] = []  # 节点受到的外力列表
         self.connected_members: List[Member] = []
         self.truss: Optional[Truss] = None
@@ -60,16 +60,19 @@ class Joint:
 
         return True
 
-    def solve(self):
+    def solve(self, virtual: bool = False, target_joint: Optional[Joint] = None, force: Force = None):
         if not self.solvable():
             raise ValueError("This joint is not yet solvable")
 
-        net_force = Force(Vector2D(0.0, 0.0))
         unsolved = []
 
-        # 1. 汇总所有外力
-        for f in self.forces:
-            net_force.value += f.value
+        if not virtual:
+            net_force = Force(Vector2D(0.0, 0.0))
+            # 1. 汇总所有外力
+            for f in self.forces:
+                net_force.value += f.value
+        else:
+            net_force = Force(Vector2D(0.0, 0.0)) if target_joint != self else force
 
         # 2. 汇总已知的构件作用力，并筛选出未知的构件
         for m in self.connected_members:
@@ -123,12 +126,17 @@ class Joint:
 
 
 class Member:
-    def __init__(self, joint1: Joint, joint2: Joint) -> None:
+    def __init__(self, joint1: Joint, joint2: Joint, E: float = 200000, A: float = 10) -> None:
         self.joints: SmartTuple = SmartTuple((joint1, joint2))
         self.force: Optional[float] = None  # 正值为拉力 (tension)，负值为压力 (compression)
+        self.E: float = E
+        self.A: float = A
 
     def force_determined(self):
         return self.force is not None
+
+    def length(self):
+        return (self.joints[0] + (-1*self.joints[1])).get_magnitude()
     
     def force_for_joints(self) -> Tuple[Force, Force]:
         """
@@ -171,6 +179,11 @@ class Truss:
 
         self.forces_solved = False
 
+    def unsolve(self):
+        self.forces_solved = False
+        for i in self.members:
+            i.force = None
+
     def add_joint(self, joint: Joint):
         self.joints.append(joint)
         joint.truss = self
@@ -178,7 +191,9 @@ class Truss:
     def add_member(self, member: Member):
         self.members.append(member)  # 修正了原代码拼写错误
 
-    def solve_forces(self):
+    def solve_forces(self, virtual: bool = False, target_joint: Optional[Joint] = None, force: Force = None):
+        self.unsolve()
+
         solved = False
         has_solvable_component = True
 
@@ -189,7 +204,7 @@ class Truss:
             for i in self.joints:
                 if i.solvable():
                     has_solvable_component = True
-                    i.solve()
+                    i.solve(virtual, target_joint, force)
 
                 if not i.solved:
                     solved = False
@@ -197,3 +212,41 @@ class Truss:
         if not solved:
             raise Warning("This truss has unsolvable components")
         self.forces_solved = solved
+
+    def solve_displacement(self):
+        directions = [Force(Vector2D(1, 0)), Force(Vector2D(0, 1))]
+
+        self.solve_forces()
+
+        # 拷贝一份 members 的真实受力数据用于后续相乘
+        real_forces = [member.force for member in self.members]
+
+        for i in self.joints:
+            # 用于暂存 x 和 y 方向的位移结果
+            disp_x, disp_y = 0.0, 0.0
+            
+            for j in range(len(directions)):
+                # 施加虚拟单位力并计算此时的构件虚拟内力
+                self.solve_forces(virtual=True, target_joint=i, force=directions[j])
+
+                # 进行乘法，利用每个 member 的 E 和 A 和 length 属性计算位移分量
+                displacement = 0.0
+                for k, member in enumerate(self.members):
+                    real_f = real_forces[k]
+                    virtual_f = member.force
+                    
+                    if real_f is not None and virtual_f is not None:
+                        L = member.length()
+                        E = member.E
+                        A = member.A
+                        # 单位力法核心公式：Δ = Σ (F_real * F_virtual * L) / (E * A)
+                        displacement += (real_f * virtual_f * L) / (E * A)
+
+                if j == 0:
+                    disp_x = displacement
+                else:
+                    disp_y = displacement
+            
+            # Vector2D 的 set_x 和 set_y 返回的是新对象，必须重新赋值。
+            # 注意：basic.py 原文 Joint 的初始化中将该属性命名为 displacement
+            i.displacement = i.displacement.set_x(disp_x).set_y(disp_y)
