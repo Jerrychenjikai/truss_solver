@@ -136,7 +136,7 @@ class Member:
         return self.force is not None
 
     def length(self):
-        return (self.joints[0] + (-1*self.joints[1])).get_magnitude()
+        return (self.joints[0].pos + (-1*self.joints[1].pos)).get_magnitude()
     
     def force_for_joints(self) -> Tuple[Force, Force]:
         """
