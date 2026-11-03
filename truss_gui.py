@@ -386,48 +386,6 @@ class TrussGUI:
 
                 tk.Label(self.prop_frame, text=f"Fx = {solved_text(force.fx_prescribed, force.fx_solved)}", bg='#f4f4f4').pack()
                 tk.Label(self.prop_frame, text=f"Fy = {solved_text(force.fy_prescribed, force.fy_solved)}", bg='#f4f4f4').pack()
-            
-            tk.Frame(self.prop_frame, height=2, bg='gray').pack(fill=tk.X, pady=10)
-            
-            mag = force.value.get_magnitude()
-            ang = force.value.get_angle_degree()
-            
-            f_m = tk.Frame(self.prop_frame, bg='#f4f4f4')
-            f_m.pack(fill=tk.X, pady=2)
-            tk.Label(f_m, text="Length:", width=8, bg='#f4f4f4').pack(side=tk.LEFT)
-            ent_m = tk.Entry(f_m)
-            ent_m.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            ent_m.insert(0, f"{mag:.4f}")
-            
-            f_a = tk.Frame(self.prop_frame, bg='#f4f4f4')
-            f_a.pack(fill=tk.X, pady=2)
-            tk.Label(f_a, text="Angle (°):", width=8, bg='#f4f4f4').pack(side=tk.LEFT)
-            ent_a = tk.Entry(f_a)
-            ent_a.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            ent_a.insert(0, f"{ang:.4f}")
-
-            def save_force_polar():
-                try:
-                    m = float(ent_m.get())
-                    a = math.radians(float(ent_a.get()))
-                    fx = m * math.cos(a)
-                    fy = m * math.sin(a)
-                    force.set_value([fx, fy])
-                    self.truss.unsolve()
-                    self.update_info_panel()
-                    self.redraw()
-                except ValueError:
-                    error_lbl.config(text="Length and angle must be numbers")
-            polar_label = "Apply as loading" if force.is_reaction else "Apply Length/Angle"
-            tk.Button(self.prop_frame, text=polar_label, command=save_force_polar).pack(pady=5)
-            if force.is_reaction:
-                tk.Label(
-                    self.prop_frame,
-                    text="Length/angle writes both\nFx and Fy, so this stops\nbeing a reaction.",
-                    fg='#555',
-                    bg='#f4f4f4',
-                    justify=tk.LEFT,
-                ).pack()
 
     def solve_truss(self):
         try:
