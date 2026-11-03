@@ -507,12 +507,12 @@ class Truss:
                 matrix.append(cache[j])
                 rhs.append(cache1[j])
 
-        print(matrix)
-        print(rhs)
+        #print(matrix)
+        #print(rhs)
 
         ans = _unique_linear_solution(matrix, rhs)
-        print(unknowns)
-        print(ans)
+        #print(unknowns)
+        #print(ans)
         solved = True
 
         for i in range(len(ans)):
