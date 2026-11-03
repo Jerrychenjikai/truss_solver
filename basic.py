@@ -6,6 +6,7 @@ from typing import Sequence, Union, Tuple, List, Optional
 Numeric = Union[int, float]
 COMP_TOL = 1e-12
 DET_TOL = 1e-9
+EQ_TOL = 1e-8
 
 
 def _clean(value: float) -> float:
@@ -18,6 +19,77 @@ def _as_component(value: Optional[Numeric]) -> Optional[float]:
     if value is None:
         return None
     return float(value)
+
+
+def _unique_linear_solution(
+    rows: List[List[float]],
+    rhs: List[float],
+    tol: float = EQ_TOL,
+) -> List[Optional[float]]:
+    """解 rows @ x = rhs，返回每个变量的值；不能唯一确定的位置为 None。
+
+    方程可以少于或多于未知量。某一未知量唯一，当且仅当零空间里它总是 0。
+    矛盾方程抛出 ValueError。
+    """
+    m = len(rows)
+    n = len(rows[0]) if m else 0
+    if any(len(row) != n for row in rows):
+        raise ValueError("Equilibrium matrix is not rectangular.")
+
+    scale = 1.0
+    for row in rows:
+        for value in row:
+            scale = max(scale, abs(value))
+    for value in rhs:
+        scale = max(scale, abs(value))
+    abs_tol = tol * scale
+
+    if n == 0:
+        for value in rhs:
+            if abs(value) > abs_tol:
+                raise ValueError(
+                    "External forces cannot be in equilibrium. "
+                    "Not enough independent reactions to balance the loads."
+                )
+        return []
+
+    aug = [list(rows[r]) + [rhs[r]] for r in range(m)]
+    pivot_of_col: dict[int, int] = {}
+    rank = 0
+    for col in range(n):
+        if rank >= m:
+            break
+        pivot = max(range(rank, m), key=lambda r: abs(aug[r][col]))
+        if abs(aug[pivot][col]) <= abs_tol:
+            continue
+        if pivot != rank:
+            aug[rank], aug[pivot] = aug[pivot], aug[rank]
+        pivot_val = aug[rank][col]
+        aug[rank] = [value / pivot_val for value in aug[rank]]
+        for r in range(m):
+            if r == rank:
+                continue
+            factor = aug[r][col]
+            if abs(factor) <= abs_tol:
+                continue
+            aug[r] = [aug[r][c] - factor * aug[rank][c] for c in range(n + 1)]
+        pivot_of_col[col] = rank
+        rank += 1
+
+    for r in range(rank, m):
+        if abs(aug[r][n]) > abs_tol:
+            raise ValueError(
+                "External forces cannot be in equilibrium. "
+                "Not enough independent reactions to balance the loads."
+            )
+
+    free_cols = [col for col in range(n) if col not in pivot_of_col]
+    solution: List[Optional[float]] = [None] * n
+    for col, row_index in pivot_of_col.items():
+        if any(abs(aug[row_index][free]) > abs_tol for free in free_cols):
+            continue
+        solution[col] = _clean(aug[row_index][n])
+    return solution
 
 
 class Force:
@@ -103,8 +175,9 @@ class Joint:
 
     def add_force(self, force: Force) -> None:
         self.forces.append(force)
+        # 节点可以不挂在桁架上（测试用）。没有桁架时不改桁架侧的任何状态。
         if self.truss is not None:
-            self.truss.unsolve()
+            self.truss.add_external_force(force)
 
     def _equilibrium_system(
         self,
@@ -287,6 +360,7 @@ class Truss:
     def __init__(self):
         self.joints: List[Joint] = []
         self.members: List[Member] = []
+        self.forces: List[Force] = []  # 体系全部外力（荷载与反力）
 
         self.forces_solved = False
 
@@ -301,13 +375,129 @@ class Truss:
                 force.fx_solved = None
                 force.fy_solved = None
 
+    def add_external_force(self, force: Force) -> None:
+        """登记一个体系外力，并让已有求解失效。"""
+        if force not in self.forces:
+            self.forces.append(force)
+        self.unsolve()
+
     def add_joint(self, joint: Joint):
         self.joints.append(joint)
         joint.truss = self
+        added_force = False
+        for force in joint.forces:
+            if force not in self.forces:
+                self.forces.append(force)
+                added_force = True
+        if added_force:
+            self.unsolve()
 
     def add_member(self, member: Member):
         self.members.append(member)
         self.unsolve()
+
+    def _ensure_force_list(self) -> None:
+        for joint in self.joints:
+            for force in joint.forces:
+                if force not in self.forces:
+                    self.forces.append(force)
+
+    def _joint_of_force(self, force: Force) -> Optional[Joint]:
+        for joint in self.joints:
+            if force in joint.forces:
+                return joint
+        return None
+
+    def _solve_external_equilibrium(
+        self,
+        virtual: bool = False,
+        target_joint: Optional[Joint] = None,
+        unit_force: Optional[Force] = None,
+    ) -> None:
+        """节点法之前，用整体 ΣFx、ΣFy、ΣM 尽量确定未知外力。
+
+        构件轴力是内力，不进入整体平衡。未知量多于 3 个时，只写入
+        被这三条方程唯一确定的分量，其余仍留给节点法。
+        与节点平衡一致：虚功工况去掉已知荷载，并在目标节点加上单位力。
+        """
+        self._ensure_force_list()
+
+        cx = 0.0
+        cy = 0.0
+        if self.joints:
+            cx = sum(joint.pos.x for joint in self.joints) / len(self.joints)
+            cy = sum(joint.pos.y for joint in self.joints) / len(self.joints)
+
+        sfx = 0.0
+        sfy = 0.0
+        sm = 0.0
+        unknowns = []  # (kind, force, x, y)
+
+        def add_known(fx: float, fy: float, x: float, y: float) -> None:
+            nonlocal sfx, sfy, sm
+            sfx += fx
+            sfy += fy
+            sm += (x - cx) * fy - (y - cy) * fx
+
+        def consider(force: Force, x: float, y: float) -> None:
+            if force.fx_prescribed is not None:
+                fx_known = force.fx_prescribed
+            elif force.fx_solved is not None:
+                fx_known = force.fx_solved
+            else:
+                fx_known = 0.0
+                unknowns.append(("fx", force, x, y))
+
+            if force.fy_prescribed is not None:
+                fy_known = force.fy_prescribed
+            elif force.fy_solved is not None:
+                fy_known = force.fy_solved
+            else:
+                fy_known = 0.0
+                unknowns.append(("fy", force, x, y))
+
+            add_known(fx_known, fy_known, x, y)
+
+        for force in self.forces:
+            if virtual and not force.is_reaction:
+                continue
+            joint = self._joint_of_force(force)
+            if joint is None:
+                continue
+            consider(force, joint.pos.x, joint.pos.y)
+
+        if virtual and target_joint is not None and unit_force is not None:
+            consider(unit_force, target_joint.pos.x, target_joint.pos.y)
+
+        n = len(unknowns)
+        rows = [[0.0] * n for _ in range(3)]
+        rhs = [-sfx, -sfy, -sm]
+        for index, (kind, _force, x, y) in enumerate(unknowns):
+            dx = x - cx
+            dy = y - cy
+            if kind == "fx":
+                rows[0][index] = 1.0
+                rows[2][index] = -dy
+            else:
+                rows[1][index] = 1.0
+                rows[2][index] = dx
+
+        char_len = 1.0
+        for joint in self.joints:
+            char_len = max(char_len, math.hypot(joint.pos.x - cx, joint.pos.y - cy))
+        if unit_force is not None and target_joint is not None:
+            char_len = max(char_len, math.hypot(target_joint.pos.x - cx, target_joint.pos.y - cy))
+        rows[2] = [value / char_len for value in rows[2]]
+        rhs[2] /= char_len
+
+        solution = _unique_linear_solution(rows, rhs)
+        for (kind, force, _x, _y), value in zip(unknowns, solution):
+            if value is None:
+                continue
+            if kind == "fx":
+                force.fx_solved = value
+            else:
+                force.fy_solved = value
 
     def _restore_real_case(self, real_member_forces: List[Optional[float]], real_reaction_state) -> None:
         for member, force in zip(self.members, real_member_forces):
@@ -325,6 +515,9 @@ class Truss:
         for member in self.members:
             if member.length() < COMP_TOL:
                 raise ValueError("A member has zero length.")
+
+        # 节点法之前先用整体平衡尽量确定未知外力，避免反力占满节点的两个未知量名额。
+        self._solve_external_equilibrium(virtual, target_joint, force)
 
         solved = len(self.joints) == 0
         progress = True

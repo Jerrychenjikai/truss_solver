@@ -134,13 +134,53 @@ class TrussGUI:
         sx = self.pan_x + (x + disp_x * self.disp_scale) * self.zoom
         sy = self.pan_y - (y + disp_y * self.disp_scale) * self.zoom
         return sx, sy
+
+    def displayed_world_xy(self, joint):
+        """绘制坐标系里的节点位置：原坐标加上被放大的位移。"""
+        return (
+            joint.pos.x + joint.displacement.x * self.disp_scale,
+            joint.pos.y + joint.displacement.y * self.disp_scale,
+        )
+
+    def joint_screen_xy(self, joint):
+        return self.world_to_screen(
+            joint.pos.x, joint.pos.y, joint.displacement.x, joint.displacement.y
+        )
+
+    def _force_arrow_tip(self, joint, force):
+        """与 redraw 相同的箭头尖端（屏幕坐标）。力为零时没有箭头。"""
+        fx, fy = force.effective_x(), force.effective_y()
+        if abs(fx) <= 1e-12 and abs(fy) <= 1e-12:
+            return None
+        x1, y1 = self.joint_screen_xy(joint)
+        return (x1 + fx * self.zoom, y1 - fy * self.zoom)
+
+    def _reaction_marker_segments(self, joint, force):
+        """未定分量的双向短箭头，屏幕坐标，与 redraw 使用同一几何。"""
+        length = self._reaction_marker_length()
+        dx = joint.displacement.x
+        dy = joint.displacement.y
+        segments = []
+        if force.fx_prescribed is None and force.fx_solved is None:
+            segments.append((
+                self.world_to_screen(joint.pos.x - length, joint.pos.y, dx, dy),
+                self.world_to_screen(joint.pos.x + length, joint.pos.y, dx, dy),
+            ))
+        if force.fy_prescribed is None and force.fy_solved is None:
+            segments.append((
+                self.world_to_screen(joint.pos.x, joint.pos.y - length, dx, dy),
+                self.world_to_screen(joint.pos.x, joint.pos.y + length, dx, dy),
+            ))
+        return segments
         
-    def find_closest_joint(self, wx, wy, threshold=15):
+    def find_closest_joint(self, sx, sy, threshold=15):
+        """屏幕坐标点选。命中位置与画出来的位置一致，包含位移放大。"""
         closest = None
-        min_d = float('inf')
+        min_d = threshold
         for j in self.truss.joints:
-            d = ((j.pos.x - wx)**2 + (j.pos.y - wy)**2)**0.5
-            if d * self.zoom < threshold and d < min_d:
+            cx, cy = self.joint_screen_xy(j)
+            d = math.hypot(cx - sx, cy - sy)
+            if d < min_d:
                 closest = j
                 min_d = d
         return closest
@@ -148,44 +188,38 @@ class TrussGUI:
     def _reaction_marker_length(self):
         return 28.0 / max(self.zoom, 1e-6)
 
-    def force_pick_points(self, joint, force):
-        """用于点选的世界坐标。已知/已解出的力用箭头尖端；未定分量用短双向箭头的两端。"""
-        jx, jy = joint.pos.x, joint.pos.y
-        points = []
-        fx, fy = force.effective_x(), force.effective_y()
-        if abs(fx) > 1e-12 or abs(fy) > 1e-12:
-            points.append((jx + fx, jy + fy))
-        length = self._reaction_marker_length()
-        if force.fx_prescribed is None and force.fx_solved is None:
-            points.extend(((jx + length, jy), (jx - length, jy)))
-        if force.fy_prescribed is None and force.fy_solved is None:
-            points.extend(((jx, jy + length), (jx, jy - length)))
-        return points
-
-    def find_closest_item(self, wx, wy):
-        # 1. Check joints
-        j = self.find_closest_joint(wx, wy)
+    def find_closest_item(self, sx, sy):
+        # 1. Check joints（变形后的屏幕位置）
+        j = self.find_closest_joint(sx, sy)
         if j: return j
         
         # 2. Check forces (arrow tip, or the ends of an unsolved reaction marker)
         closest_f = None
-        min_fd = float('inf')
-        for j in self.truss.joints:
-            for f in j.forces:
-                for mx, my in self.force_pick_points(j, f):
-                    d = ((mx - wx)**2 + (my - wy)**2)**0.5
-                    if d * self.zoom < 18 and d < min_fd:
-                        closest_f = f
+        min_fd = 18.0
+        for joint in self.truss.joints:
+            for force in joint.forces:
+                points = []
+                tip = self._force_arrow_tip(joint, force)
+                if tip is not None:
+                    points.append(tip)
+                for segment in self._reaction_marker_segments(joint, force):
+                    points.extend(segment)
+                for mx, my in points:
+                    d = math.hypot(mx - sx, my - sy)
+                    if d < min_fd:
+                        closest_f = force
                         min_fd = d
         if closest_f: return closest_f
 
-        # 3. Check members
+        # 3. Check members along the deformed, drawn segment
         closest_m = None
-        min_md = float('inf')
+        min_md = 10.0
         for m in self.truss.members:
             j1, j2 = m.joints[0], m.joints[1]
-            d = point_to_segment_dist(wx, wy, j1.pos.x, j1.pos.y, j2.pos.x, j2.pos.y)
-            if d * self.zoom < 10 and d < min_md:
+            x1, y1 = self.joint_screen_xy(j1)
+            x2, y2 = self.joint_screen_xy(j2)
+            d = point_to_segment_dist(sx, sy, x1, y1, x2, y2)
+            if d < min_md:
                 closest_m = m
                 min_md = d
         return closest_m
@@ -194,7 +228,7 @@ class TrussGUI:
         wx, wy = self.screen_to_world(event.x, event.y)
         
         if self.current_tool == 'SELECT':
-            self.selected_item = self.find_closest_item(wx, wy)
+            self.selected_item = self.find_closest_item(event.x, event.y)
             self.update_info_panel()
             
         elif self.current_tool == 'JOINT':
@@ -203,7 +237,7 @@ class TrussGUI:
             self.show_item(new_j)
             
         elif self.current_tool == 'MEMBER':
-            j = self.find_closest_joint(wx, wy)
+            j = self.find_closest_joint(event.x, event.y)
             if j:
                 if self.temp_joint is None:
                     self.temp_joint = j
@@ -222,12 +256,14 @@ class TrussGUI:
                 
         elif self.current_tool == 'FORCE':
             if self.temp_joint is None:
-                j = self.find_closest_joint(wx, wy)
+                j = self.find_closest_joint(event.x, event.y)
                 if j:
                     self.temp_joint = j
             else:
-                fx = wx - self.temp_joint.pos.x
-                fy = wy - self.temp_joint.pos.y
+                # 箭头从画出来的节点画起，所以力向量也相对该显示位置取值。
+                ox, oy = self.displayed_world_xy(self.temp_joint)
+                fx = wx - ox
+                fy = wy - oy
                 new_f = Force(Vector2D(fx, fy))
                 self.temp_joint.add_force(new_f)
                 self.temp_joint = None
@@ -409,8 +445,8 @@ class TrussGUI:
         
         for m in self.truss.members:
             j1, j2 = m.joints[0], m.joints[1]
-            x1, y1 = self.world_to_screen(j1.pos.x, j1.pos.y, j1.displacement.x, j1.displacement.y)
-            x2, y2 = self.world_to_screen(j2.pos.x, j2.pos.y, j2.displacement.x, j2.displacement.y)
+            x1, y1 = self.joint_screen_xy(j1)
+            x2, y2 = self.joint_screen_xy(j2)
             
             color = "black"
             width = 2
@@ -425,7 +461,7 @@ class TrussGUI:
             self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width, tags="member")
             
         for j in self.truss.joints:
-            x1, y1 = self.world_to_screen(j.pos.x, j.pos.y, j.displacement.x, j.displacement.y)
+            x1, y1 = self.joint_screen_xy(j)
             for f in j.forces:
                 color = "#7c3aed" if f.is_reaction else "green"
                 width = 2
@@ -433,24 +469,16 @@ class TrussGUI:
                     color = "orange"
                     width = 4
 
-                fx, fy = f.effective_x(), f.effective_y()
-                if abs(fx) > 1e-12 or abs(fy) > 1e-12:
-                    x2 = x1 + fx * self.zoom
-                    y2 = y1 - fy * self.zoom
+                tip = self._force_arrow_tip(j, f)
+                if tip is not None:
+                    x2, y2 = tip
                     self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width, arrow=tk.LAST, tags="force")
 
-                length = self._reaction_marker_length()
-                if f.fx_prescribed is None and f.fx_solved is None:
-                    ax1, ay1 = self.world_to_screen(j.pos.x - length, j.pos.y, j.displacement.x, j.displacement.y)
-                    ax2, ay2 = self.world_to_screen(j.pos.x + length, j.pos.y, j.displacement.x, j.displacement.y)
-                    self.canvas.create_line(ax1, ay1, ax2, ay2, fill=color, width=width, arrow=tk.BOTH, dash=(4, 2), tags="force")
-                if f.fy_prescribed is None and f.fy_solved is None:
-                    ax1, ay1 = self.world_to_screen(j.pos.x, j.pos.y - length, j.displacement.x, j.displacement.y)
-                    ax2, ay2 = self.world_to_screen(j.pos.x, j.pos.y + length, j.displacement.x, j.displacement.y)
+                for (ax1, ay1), (ax2, ay2) in self._reaction_marker_segments(j, f):
                     self.canvas.create_line(ax1, ay1, ax2, ay2, fill=color, width=width, arrow=tk.BOTH, dash=(4, 2), tags="force")
                 
         for j in self.truss.joints:
-            cx, cy = self.world_to_screen(j.pos.x, j.pos.y, j.displacement.x, j.displacement.y)
+            cx, cy = self.joint_screen_xy(j)
             r = 6
             
             color = "white"
@@ -460,13 +488,11 @@ class TrussGUI:
             self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill=color, outline="black", width=2, tags="joint")
             
         if self.current_tool == 'MEMBER' and self.temp_joint is not None:
-            cx, cy = self.world_to_screen(self.temp_joint.pos.x, self.temp_joint.pos.y, 
-                                          self.temp_joint.displacement.x, self.temp_joint.displacement.y)
+            cx, cy = self.joint_screen_xy(self.temp_joint)
             self.canvas.create_oval(cx-8, cy-8, cx+8, cy+8, outline="blue", width=2, dash=(2,2))
             
         if self.current_tool == 'FORCE' and self.temp_joint is not None:
-            cx, cy = self.world_to_screen(self.temp_joint.pos.x, self.temp_joint.pos.y, 
-                                          self.temp_joint.displacement.x, self.temp_joint.displacement.y)
+            cx, cy = self.joint_screen_xy(self.temp_joint)
             self.canvas.create_oval(cx-8, cy-8, cx+8, cy+8, outline="green", width=2, dash=(2,2))
             
 if __name__ == "__main__":
