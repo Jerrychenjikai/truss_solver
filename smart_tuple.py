@@ -44,6 +44,24 @@ class Vector2D(SmartTuple):
     def __new__(cls, x: Numeric = 0.0, y: Numeric = 0.0) -> Vector2D:
         return super().__new__(cls, (float(x), float(y)))
 
+    def __add__(self, other: Sequence) -> Vector2D:
+        res = super().__add__(other)
+        if res is NotImplemented:
+            return NotImplemented
+        return Vector2D(res[0], res[1])
+
+    def __radd__(self, other: Sequence) -> Vector2D:
+        return self.__add__(other)
+
+    def __mul__(self, other: Numeric) -> Vector2D:
+        res = super().__mul__(other)
+        if res is NotImplemented:
+            return NotImplemented
+        return Vector2D(res[0], res[1])
+
+    def __rmul__(self, other: Numeric) -> Vector2D:
+        return self.__mul__(other)
+
     @property
     def x(self) -> float:
         return self[0]
