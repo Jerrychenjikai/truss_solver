@@ -48,8 +48,8 @@ def _unique_linear_solution(
         for value in rhs:
             if abs(value) > abs_tol:
                 raise ValueError(
-                    "External forces cannot be in equilibrium. "
-                    "Not enough independent reactions to balance the loads."
+                    "System cannot be in equilibrium. "
+                    "Not enough members to balance the loads."
                 )
         return []
 
@@ -79,8 +79,8 @@ def _unique_linear_solution(
     for r in range(rank, m):
         if abs(aug[r][n]) > abs_tol:
             raise ValueError(
-                "External forces cannot be in equilibrium. "
-                "Not enough independent reactions to balance the loads."
+                "System cannot be in equilibrium. "
+                "Not enough members to balance the loads."
             )
 
     free_cols = [col for col in range(n) if col not in pivot_of_col]
@@ -113,6 +113,16 @@ class Force:
     @property
     def is_reaction(self) -> bool:
         return self.fx_prescribed is None or self.fy_prescribed is None
+
+    def x_solved(self) -> bool:
+        if (self.fx_prescribed is not None or self.fx_solved is not None):
+            return True
+        return False
+
+    def y_solved(self) -> bool:
+        if (self.fy_prescribed is not None or self.fy_solved is not None):
+            return True
+        return False
 
     def effective_x(self) -> float:
         if self.fx_prescribed is not None:
@@ -179,134 +189,72 @@ class Joint:
         if self.truss is not None:
             self.truss.add_external_force(force)
 
-    def _equilibrium_system(
-        self,
-        virtual: bool = False,
-        target_joint: Optional[Joint] = None,
-        unit_force: Optional[Force] = None,
-    ):
-        """返回 (fx_known, fy_known, unknowns)。
+    def solve(self, unknowns: List[Unknown], 
+              virtual: bool = False, 
+              target_joint: Optional[Joint] = None, 
+              force: Optional[Force] = None) -> Tuple[List[List[float]], List[float]]:
+        
+        def find_index(member: Union[Force, Member], unknowns: List[Unknown], kind: Optional[str] = 'x'):
+            for i in range(len(unknowns)):
+                if type(member) == Member and unknowns[i].value == member:
+                    return i
+                if type(member) == Force and unknowns[i].value == member and unknowns[i].kind == kind:
+                    return i
+            raise ValueError("object not in list")
 
-        unknowns 的每一项是 (kind, obj, cx, cy)：
-        kind 为 "member" / "fx" / "fy"。系数是该未知量在 ΣFx、ΣFy 中的系数。
-        正的构件轴力为拉力，作用在本节点上的方向指向另一端。
+        row_x = [0.0] * len(unknowns)
+        row_y = [0.0] * len(unknowns)
 
-        虚功工况只排除两个分量都已知的荷载；反力整体保留
-        （已指定的分量，通常是 0，仍作为已知值，未定分量继续当未知量）。
-        """
-        fx = 0.0
-        fy = 0.0
-        unknowns = []
+        net_force_x = 0.0
+        net_force_y = 0.0
 
-        for force in self.forces:
-            if virtual and not force.is_reaction:
-                continue
-            if force.fx_prescribed is not None:
-                fx += force.fx_prescribed
-            elif force.fx_solved is not None:
-                fx += force.fx_solved
-            else:
-                unknowns.append(("fx", force, 1.0, 0.0))
+        if virtual and self == target_joint:
+            net_force_x = force.effective_x()
+            net_force_y = force.effective_y()
 
-            if force.fy_prescribed is not None:
-                fy += force.fy_prescribed
-            elif force.fy_solved is not None:
-                fy += force.fy_solved
-            else:
-                unknowns.append(("fy", force, 0.0, 1.0))
-
-        if virtual and target_joint is self and unit_force is not None:
-            fx += unit_force.effective_x()
-            fy += unit_force.effective_y()
-
+        # 1. 遍历相连构件 (Members)
         for member in self.connected_members:
             if member.force_determined():
-                contrib = member.force_for_joint(self)
-                fx += contrib.effective_x()
-                fy += contrib.effective_y()
+                # 若力已确定，计算其对节点的已知作用力 (注意 effective_x 和 effective_y 是方法)
+                f = member.force_for_joint(self)
+                net_force_x += f.effective_x()
+                net_force_y += f.effective_y()
+            else:
+                # 若力未定，不能调用 force_for_joint (会报错)，需通过位置坐标计算离开当前节点的方向向量
+                other_joint = member.joints[1] if member.joints[0] == self else member.joints[0]
+                delta = other_joint.pos + (self.pos * -1)
+                unit_dir = delta.get_direction()
+                
+                idx = find_index(member, unknowns)
+                row_x[idx] = unit_dir.x
+                row_y[idx] = unit_dir.y
+
+        # 2. 遍历节点直接受到的外力或反力 (Forces)
+        for f in self.forces:
+            if virtual and not f.is_reaction:
                 continue
-
-            other = member.joints[1] if member.joints[0] is self else member.joints[0]
-            delta = other.pos + (self.pos * -1)
-            if delta.get_magnitude() < COMP_TOL:
-                ux, uy = 0.0, 0.0
+            if f.x_solved():
+                # 已知的 X 方向力，直接累加
+                net_force_x += f.effective_x()
             else:
-                unit = delta.get_direction()
-                ux, uy = unit.x, unit.y
-            unknowns.append(("member", member, ux, uy))
+                # 未知的 X 方向力，系数记为 1
+                row_x[find_index(f, unknowns, 'x')] = 1.0
 
-        return fx, fy, unknowns
-
-    @staticmethod
-    def _unknowns_are_solvable(unknowns) -> bool:
-        count = len(unknowns)
-        if count == 0:
-            return True
-        if count == 1:
-            _, _, ux, uy = unknowns[0]
-            return abs(ux) > COMP_TOL or abs(uy) > COMP_TOL
-        if count == 2:
-            _, _, u1x, u1y = unknowns[0]
-            _, _, u2x, u2y = unknowns[1]
-            det = u1x * u2y - u1y * u2x
-            return not math.isclose(det, 0.0, abs_tol=DET_TOL)
-        return False
-
-    def solvable(self):
-        # 未定的外力分量与未定的构件轴力一样，都算未知量。一个节点最多两个独立未知量。
-        _, _, unknowns = self._equilibrium_system()
-        return self._unknowns_are_solvable(unknowns)
-
-    def solved(self):
-        for member in self.connected_members:
-            if not member.force_determined():
-                return False
-        for force in self.forces:
-            if force.fx_prescribed is None and force.fx_solved is None:
-                return False
-            if force.fy_prescribed is None and force.fy_solved is None:
-                return False
-        return True
-
-    def solve(self, virtual: bool = False, target_joint: Optional[Joint] = None, force: Optional[Force] = None):
-        fx_known, fy_known, unknowns = self._equilibrium_system(virtual, target_joint, force)
-        if not self._unknowns_are_solvable(unknowns):
-            raise ValueError("This joint is not yet solvable")
-
-        values = self._solve_unknown_values(unknowns, fx_known, fy_known)
-        for (kind, obj, _, _), value in zip(unknowns, values):
-            if kind == "member":
-                obj.force = value
-            elif kind == "fx":
-                obj.fx_solved = value
+            if f.y_solved():
+                # 已知的 Y 方向力，直接累加
+                net_force_y += f.effective_y()
             else:
-                obj.fy_solved = value
+                # 未知的 Y 方向力，系数记为 1
+                row_y[find_index(f, unknowns, 'y')] = 1.0
 
-    @staticmethod
-    def _solve_unknown_values(unknowns, fx_known: float, fy_known: float) -> List[float]:
-        if len(unknowns) == 0:
-            return []
+        # 3. 构建方程: 系数 * 未知量 + 净已知力 = 0 => 系数 * 未知量 = -净已知力
+        rhs_x = -net_force_x
+        rhs_y = -net_force_y
 
-        if len(unknowns) == 1:
-            _, _, ux, uy = unknowns[0]
-            # 选绝对值较大的分量，避免除以接近 0 的投影
-            if abs(ux) > abs(uy):
-                if abs(ux) < COMP_TOL:
-                    raise ValueError("Cannot solve: unknown does not appear in equilibrium.")
-                return [_clean(-fx_known / ux)]
-            if abs(uy) < COMP_TOL:
-                raise ValueError("Cannot solve: unknown does not appear in equilibrium.")
-            return [_clean(-fy_known / uy)]
+        return [row_x, row_y], [rhs_x, rhs_y]
+            
 
-        _, _, u1x, u1y = unknowns[0]
-        _, _, u2x, u2y = unknowns[1]
-        det = u1x * u2y - u1y * u2x
-        if math.isclose(det, 0.0, abs_tol=DET_TOL):
-            raise ValueError("Cannot solve: the two unknowns are linearly dependent.")
 
-        f1 = ((-fx_known) * u2y - (-fy_known) * u2x) / det
-        f2 = (u1x * (-fy_known) - u1y * (-fx_known)) / det
-        return [_clean(f1), _clean(f2)]
 
 
 class Member:
@@ -354,6 +302,26 @@ class Member:
         j1_pos = self.joints[0].pos
         j2_pos = self.joints[1].pos
         return j2_pos + (j1_pos * -1)
+
+class Unknown:
+    def __init__(self, value: Union[Member, Force], kind: Optional[str] = None):
+        self.value: Union[Member, Force] = value
+
+        self.kind: Optional[str] = kind #either x or y
+        if type(value) == Force and self.kind is None:
+            self.kind = 'x'
+
+    def enumerate(self, value: Union[float, int]):
+        if type(self.value) == Force:
+            if self.kind == 'x':
+                self.value.fx_solved = value
+            else:
+                self.value.fy_solved = value
+        else:
+            self.value.force = value
+
+    def __repr__(self) -> str:
+        return str(type(self.value))
 
 
 class Truss:
@@ -519,24 +487,39 @@ class Truss:
         # 节点法之前先用整体平衡尽量确定未知外力，避免反力占满节点的两个未知量名额。
         self._solve_external_equilibrium(virtual, target_joint, force)
 
-        solved = len(self.joints) == 0
-        progress = True
-        guard = 0
-        limit = max(4, len(self.joints) * len(self.joints) + 2)
 
-        while not solved and progress and guard < limit:
-            guard += 1
-            progress = False
-            solved = True
+        unknowns: List[Unknown] = [] # this acts as the x vector of the matrix
 
-            for joint in self.joints:
-                was_solved = joint.solved()
-                if not was_solved and joint.solvable():
-                    joint.solve(virtual, target_joint, force)
-                if not joint.solved():
-                    solved = False
-                elif not was_solved:
-                    progress = True
+        for i in self.members:
+            unknowns.append(Unknown(i)) # this only has 1 unknown, that is its magnitude
+
+        for i in self.forces:
+            if not i.x_solved():
+                unknowns.append(Unknown(i, 'x'))
+            if not i.y_solved():
+                unknowns.append(Unknown(i, 'y'))
+
+        matrix: List[List[float]] = []
+        rhs: List[float] = []
+        for i in self.joints:
+            cache, cache1 = i.solve(unknowns, virtual, target_joint, force) #this returns a list of lists and a list of int, representing rows in matrix
+            for j in range(len(cache)):
+                matrix.append(cache[j])
+                rhs.append(cache1[j])
+
+        print(matrix)
+        print(rhs)
+
+        ans = _unique_linear_solution(matrix, rhs)
+        print(unknowns)
+        print(ans)
+        solved = True
+
+        for i in range(len(ans)):
+            if ans[i] is not None:
+                unknowns[i].enumerate(ans[i])
+            else:
+                solved = False
 
         if not solved:
             raise Warning(
