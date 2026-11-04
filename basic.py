@@ -9,9 +9,6 @@ COMP_TOL = 1e-12
 DET_TOL = 1e-9
 EQ_TOL = 1e-8
 
-_unique_linear_solution = solve_matrix # or change it to linear_solution, the dedault function
-
-
 def _clean(value: float) -> float:
     if abs(value) < 1e-10:
         return 0.0
@@ -93,6 +90,11 @@ def linear_solution(
             continue
         solution[col] = _clean(aug[row_index][n])
     return solution
+
+
+
+_unique_linear_solution = linear_solution # or change it to solve_matrix, the dedault function
+
 
 
 class Force:
