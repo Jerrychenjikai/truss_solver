@@ -18,7 +18,7 @@ def pivot_index(row: List[float]) -> Optional[int]:
 def pivot_index_order(row: List[float]) -> int:
     value = pivot_index(row)
     if value is None:
-        return 99999999999999
+        return len(row)
     return value
 
 def all_zero(row: List[float]) -> bool:
