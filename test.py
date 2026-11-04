@@ -14,12 +14,12 @@ def test_with_numpy(size=10):
     x_found = solve_matrix(M.tolist(), b.tolist())
     
     # 打印结果进行比对
-    print("预设的真实解 x_true :", np.round(x_true, 6))
-    print("解算出的结果 x_found:", np.round(x_found, 6))
+    print("answer x_true :", np.round(x_true, 6))
+    print("output x_found:", np.round(x_found, 6))
     
     # 计算并输出最大误差
     error = np.max(np.abs(x_true - x_found))
-    print(f"最大计算误差: {error:.2e}")
+    print(f"max residule: {error:.2e}")
 
 if __name__ == "__main__":
     np.random.seed(random.randint(0,10000)) # 固定随机种子以便复现
