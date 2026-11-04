@@ -33,18 +33,22 @@ def check_elimination(matrix: List[List[float]],
     if col is None:
         return None
 
+    rows_to_be_eliminated = []
+
     for i in range(len(matrix)):
         if i == row:
             continue
         if not eq(matrix[i][col], 0):
-            return i
+            rows_to_be_eliminated.append(i)
 
+    if len(rows_to_be_eliminated) > 0:
+        return rows_to_be_eliminated
     return None
 
 def eliminate(matrix: List[List[float]],
               rows: tuple[int, int]) -> None:
     #assume check_elimination has passed
-    if pivot_index(matrix[rows[0]]) > pivot_index(matrix[rows[1]]):
+    if pivot_index(matrix[rows[0]]) >= pivot_index(matrix[rows[1]]):
         rows = (rows[1], rows[0])
 
     # matrix[rows[0]] = matrix[rows[0]] - matrix[rows[1]]
@@ -88,10 +92,12 @@ def solve_matrix(
     for i in range(len(matrix)):
         matrix[i].append(rhs[i])
 
-    while not is_solved(matrix):
-        for i in range(len(matrix)):
-            row = check_elimination(matrix, i)
-            if row is not None:
+    order(matrix)
+
+    for i in range(len(matrix)):
+        rows = check_elimination(matrix, i)
+        if rows is not None:
+            for row in rows:
                 eliminate(matrix, (i, row))
 
     order(matrix)
