@@ -1,5 +1,6 @@
 from __future__ import annotations
 from smart_tuple import *
+from matrix_solver import solve_matrix
 import math
 from typing import Sequence, Union, Tuple, List, Optional
 
@@ -7,6 +8,8 @@ Numeric = Union[int, float]
 COMP_TOL = 1e-12
 DET_TOL = 1e-9
 EQ_TOL = 1e-8
+
+_unique_linear_solution = solve_matrix # or change it to linear_solution, the dedault function
 
 
 def _clean(value: float) -> float:
@@ -21,7 +24,7 @@ def _as_component(value: Optional[Numeric]) -> Optional[float]:
     return float(value)
 
 
-def _unique_linear_solution(
+def linear_solution(
     rows: List[List[float]],
     rhs: List[float],
     tol: float = EQ_TOL,
