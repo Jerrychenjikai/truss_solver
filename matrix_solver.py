@@ -97,6 +97,8 @@ def solve_matrix(
     order(matrix)
 
     #figure out answer
+
+    #turn augmented matrix back
     for i in range(len(matrix)):
         rhs[i] = matrix[i][-1]
         del matrix[i][-1]
