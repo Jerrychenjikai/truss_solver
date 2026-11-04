@@ -48,6 +48,7 @@ def check_elimination(matrix: List[List[float]],
 def eliminate(matrix: List[List[float]],
               rows: tuple[int, int]) -> None:
     #assume check_elimination has passed
+    #ensure pivot of rows[0] intact
     if pivot_index(matrix[rows[0]]) >= pivot_index(matrix[rows[1]]):
         rows = (rows[1], rows[0])
 
